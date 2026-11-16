@@ -1,0 +1,17 @@
+{
+  "name": "نحلة الحروف",
+  "short_name": "نحلة الحروف",
+  "description": "تعلّم النحو والإعراب والإملاء مع نحّولة",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fff8e7",
+  "theme_color": "#ffd23f",
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}
