@@ -22,6 +22,7 @@ function tone(ok){
   if (!S.sound) return;
   try {
     AC = AC || new (window.AudioContext || window.webkitAudioContext)();
+    if (AC.state === 'suspended') AC.resume();
     const notes = ok ? [523, 659, 784] : [300, 220];
     notes.forEach((f, i) => {
       const o = AC.createOscillator(), g = AC.createGain();
@@ -38,13 +39,25 @@ function say(text){
   try {
     if (window.AndroidTTS){ AndroidTTS.speak(String(text).replace(/_+/g, ' ... ').replace(/[«»]/g, '')); return true; }
     if (!('speechSynthesis' in window)) return false;
-    speechSynthesis.cancel();
+    // في آيفون/آيباد: استدعاء cancel ثم speak مباشرة يُسكت الصوت، لذلك نلغي فقط إذا كان هناك كلام جارٍ
+    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(String(text).replace(/_+/g, ' ... ').replace(/[«»]/g, ''));
     u.lang = 'ar-SA'; const v = arVoice(); if (v) u.voice = v; u.rate = 0.85;
     speechSynthesis.speak(u); return true;
   } catch(e){ return false; }
 }
-try { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => {}; } catch(e){}
+try { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices(); } catch(e){}
+// يسمح بالصوت حتى لو كان الآيفون/الآيباد على الوضع الصامت (Safari 16.4+)
+try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch(e){}
+// فتح الصوت عند أول لمسة (متطلب في آيفون/آيباد)
+let UNLOCKED = false;
+function unlockAudio(){
+  if (UNLOCKED) return; UNLOCKED = true;
+  try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); AC.resume(); const b = AC.createBuffer(1, 1, 22050), src = AC.createBufferSource(); src.buffer = b; src.connect(AC.destination); src.start(0); } catch(e){}
+  try { if (!window.AndroidTTS && 'speechSynthesis' in window){ const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.lang = 'ar-SA'; speechSynthesis.speak(u); } } catch(e){}
+}
+document.addEventListener('touchend', unlockAudio, {passive:true});
+document.addEventListener('click', unlockAudio);
 const spk = t => `<button class="spk" data-t="${esc(t)}" onclick="event.stopPropagation();say(this.dataset.t)" aria-label="استمع">🔊</button>`;
 
 /* ---------- الشخصية: النحلة نحّولة ---------- */
