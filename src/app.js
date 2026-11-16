@@ -82,6 +82,34 @@ const bubble = (html, mood) => `<div class="agent">${bee(54, mood)}<div class="b
    2) يختار السؤال التالي حسب مستوى الطفل (أسهل بعد الخطأ، أصعب بعد النجاح)
    3) يعطي تلميحًا ثم شرحًا عند الخطأ، ويقترح مراجعة الدرس إذا تكرر الخطأ
    4) يقترح الدرس التالي حسب العمر ونقاط الضعف ونتيجة الاختبار القبلي */
+/* ================= التكييف حسب العمر =================
+   كل عمر له «مستوى بداية» لصعوبة الأسئلة (1 = سهل جدًا … 5 = صعب)، وحدّ أعلى لا يتجاوزه.
+   الأعمار الصغيرة: خيارات أقل، قراءة السؤال بالصوت تلقائيًا، اختيار بدل الكتابة، وجلسات أقصر. */
+const AGE = {
+  base(){ return {5:1, 6:1.5, 7:2, 8:2.5, 9:3, 10:3.5, 11:4, 12:4.5}[P().age] || 3; },
+  maxD(){ return Math.min(5, Math.ceil(AGE.base() + 1)); },
+  minD(){ return Math.max(1, Math.floor(AGE.base() - 1)); },
+  nOpts(){ const a = P().age; return a <= 6 ? 2 : a <= 8 ? 3 : 4; },
+  canType(){ return P().age >= 7; },
+  autoRead(){ return P().age <= 7; },
+  sesN(){ const a = P().age; return a <= 5 ? 4 : a <= 6 ? 5 : 6; },
+  chalSec(){ const a = P().age; return a <= 6 ? 90 : a <= 8 ? 75 : 60; },
+  band(){ const a = P().age; return a <= 6 ? 'A' : a <= 8 ? 'B' : a <= 10 ? 'C' : 'D'; },
+  fits(c){ return c.a <= P().age; },
+  /* يجهّز السؤال للعرض حسب العمر: عدد الخيارات، وتحويل الكتابة إلى اختيار للصغار */
+  prepare(q){
+    q = Object.assign({}, q);
+    if ((q.type === 'fix' || q.type === 'dict') && !AGE.canType()){
+      q.opts = q.type === 'fix' ? [q.ans, q.wrong] : q.opts; q.type = 'choose';
+      q.q = q.type === 'choose' && q.wrong ? 'اختر الكتابة الصحيحة:' : 'استمع ثم اختر الكتابة الصحيحة:';
+      q.listen = q.wrong ? null : q.ans;
+    }
+    if (q.opts){ const wrong = shuffle(q.opts.filter(o => o !== q.ans)).slice(0, AGE.nOpts() - 1); q.shown = shuffle([q.ans, ...wrong]); }
+    return q;
+  }
+};
+const DLABEL = ['', 'سهل جدًا', 'سهل', 'متوسط', 'صعب', 'صعب جدًا'];
+
 const AG = {
   p(cid){ return (P().m[cid] ?? 0.15); },
   n(cid){ return (P().at[cid] || {n:0}).n; },
@@ -96,8 +124,8 @@ const AG = {
     save();
   },
   recentWrong(cid, k = 4){ return P().log.filter(l => l.c === cid).slice(-k).filter(l => !l.ok).length; },
-  target(cid){ const p = AG.p(cid); return p < 0.4 ? 1 : p < 0.75 ? 2 : 3; },
-  band(){ const a = P().age; return a <= 7 ? 1 : a <= 10 ? 2 : 3; },
+  /* الصعوبة المستهدفة = مستوى العمر ± حسب إتقان الطفل للدرس */
+  target(cid){ const p = AG.p(cid), adj = p < 0.4 ? -0.5 : p < 0.75 ? 0 : 1; return Math.min(AGE.maxD(), Math.max(AGE.minD(), AGE.base() + adj)); },
   progress(mod){ const L = LIST(mod); return L.reduce((s, c) => s + (P().m[c.id] ?? 0), 0) / L.length; },
   accuracy(mod){ let n = 0, c = 0; LIST(mod).forEach(x => { const a = P().at[x.id]; if (a){ n += a.n; c += a.c; } }); return n ? c / n : null; },
   /* اختيار السؤال التالي */
@@ -111,30 +139,36 @@ const AG = {
     }
     let tgt = AG.target(cid);
     if (ses.lastWrong) tgt = Math.max(1, tgt - 1);
-    const all = questionsOf(cid);
-    let cand = all.filter(q => !ses.used.has(q.id));
-    if (!cand.length){ ses.used = new Set([...ses.used].filter(id => !id.startsWith(cid + '-'))); cand = all; }
+    // نختار أولًا من الأسئلة التي تناسب عمر الطفل (لا أسهل كثيرًا ولا أصعب)، ثم نوسّع إذا انتهت
+    const all = questionsOf(cid), fresh = all.filter(q => !ses.used.has(q.id));
+    let cand = fresh.filter(q => q.d >= AGE.minD() && q.d <= AGE.maxD());
+    if (!cand.length) cand = fresh.filter(q => q.d <= AGE.maxD());
+    if (!cand.length) cand = fresh;
+    if (!cand.length){ ses.used = new Set([...ses.used].filter(id => !id.startsWith(cid + '-'))); cand = all.filter(q => q.d <= AGE.maxD()); if (!cand.length) cand = all; }
     const best = Math.min(...cand.map(q => Math.abs(q.d - tgt)));
     cand = cand.filter(q => Math.abs(q.d - tgt) === best);
     const q = cand[Math.floor(Math.random() * cand.length)];
     ses.used.add(q.id);
     if (!why){
       why = ses.lastWrong ? 'اخترتُ لك سؤالًا أسهل قليلًا لنثبّت الفكرة 🌱'
-          : tgt === 3 ? 'أداؤك ممتاز! جرّب هذا السؤال الأصعب 🚀'
-          : tgt === 2 ? 'سؤال متوسط يناسب مستواك الآن ⭐' : 'نبدأ بسؤال سهل 🌼';
+          : tgt > AGE.base() ? 'أداؤك ممتاز! جرّب هذا السؤال الأصعب قليلًا 🚀'
+          : tgt < AGE.base() ? 'نبدأ بسؤال أسهل حتى تتقن الفكرة 🌼' : `سؤال يناسب عمرك (${P().age} سنوات) ⭐`;
     }
-    return Object.assign({}, q, {why2: why});
+    return Object.assign(AGE.prepare(q), {why2: why});
   },
   /* التوصية بالخطوة التالية */
   recommend(mod){
     const L = LIST(mod);
     const weak = L.filter(c => AG.n(c.id) >= 2 && AG.p(c.id) < 0.6).sort((a, b) => AG.p(a.id) - AG.p(b.id));
     if (weak.length) return {c:weak[0], kind:'weak', text:`لاحظتُ أن درس «${weak[0].t}» يحتاج إلى تدريب أكثر (إتقانك ${pct(AG.p(weak[0].id))}%). هيا نراجعه معًا!`};
-    const b = AG.band();
-    const nx = L.find(c => AG.n(c.id) === 0 && c.lv <= b) || L.find(c => AG.n(c.id) === 0);
+    // درس جديد: نبدأ بالدروس القريبة من عمر الطفل (حتى لا يبدأ ابن 12 سنة بدروس عمر 5)
+    const age = P().age, fresh = L.filter(c => AG.n(c.id) === 0 && AGE.fits(c));
+    const nx = fresh.find(c => c.a >= Math.min(age - 3, 8)) || fresh[0];
     if (nx) return {c:nx, kind:'new', text:`أنت جاهز لدرس جديد في ${MODNAME[mod]}: «${nx.t}» ${nx.e}`};
-    const nm = L.filter(c => AG.p(c.id) < 0.85).sort((a, b) => AG.p(a.id) - AG.p(b.id));
-    if (nm.length) return {c:nm[0], kind:'practice', text:`أكملت كل الدروس! لنقوِّ «${nm[0].t}» حتى تحصل على التاج 👑`};
+    const nm = L.filter(c => AGE.fits(c) && AG.p(c.id) < 0.85).sort((a, b) => AG.p(a.id) - AG.p(b.id));
+    if (nm.length) return {c:nm[0], kind:'practice', text:`جرّبت كل دروس عمرك! لنقوِّ «${nm[0].t}» حتى تحصل على التاج 👑`};
+    const up = L.find(c => AG.n(c.id) === 0);
+    if (up) return {c:up, kind:'new', text:`أتقنت دروس عمرك! هل تجرّب درسًا للأكبر منك؟ «${up.t}» ${up.e}`};
     return {c:null, kind:'done', text:`رائع! أتقنت كل دروس ${MODNAME[mod]}. جرّب التحدي السريع ⏱️`};
   }
 };
@@ -207,6 +241,7 @@ function scrHome(){
     if (r2.c) act += `<button class="btn ghost" onclick="scrLesson('${r2.c.id}')">أو: ${r2.c.t}</button>`;
   }
   view(`${bubble(`<b>نحّولة تقترح:</b><br>${msg}<div class="row wrap g6 mt8">${act}</div>`)}
+   <p class="small center">🎯 الأسئلة مضبوطة لعمر ${pr.age} سنوات</p>
    <div class="grid2">
     <button class="mod gram" onclick="scrMap('g')"><span class="em">📚</span><b>النحو والإعراب</b><small>${GRAMMAR.length} درسًا</small>${bar(gp, '#fff')}<small>${pct(gp)}%</small></button>
     <button class="mod spel" onclick="scrMap('s')"><span class="em">✏️</span><b>الإملاء</b><small>${SPELLING.length} دروس</small>${bar(sp, '#fff')}<small>${pct(sp)}%</small></button>
@@ -223,29 +258,35 @@ function scrHome(){
 
 /* ---------- خريطة الدروس ---------- */
 function scrMap(mod){
-  const L = LIST(mod), b = AG.band(), r = AG.recommend(mod);
-  view(`${bubble(r.text)}
-   <div class="list">${L.map((c, i) => {
-     const p = P().m[c.id] ?? 0, rec = r.c && r.c.id === c.id;
-     return `<button class="les ${mod === 'g' ? 'lg' : 'ls'} ${rec ? 'rec' : ''}" onclick="scrLesson('${c.id}')">
+  const L = LIST(mod), r = AG.recommend(mod), age = P().age;
+  const item = (c) => {
+    const p = P().m[c.id] ?? 0, rec = r.c && r.c.id === c.id, i = L.indexOf(c);
+    return `<button class="les ${mod === 'g' ? 'lg' : 'ls'} ${rec ? 'rec' : ''}" onclick="scrLesson('${c.id}')">
        <span class="num">${i + 1}</span><span class="em2">${c.e}</span>
-       <span class="lt"><b>${c.t}</b><small>${['','سهل','متوسط','متقدم'][c.lv]}${c.lv > b ? ' • لعمر أكبر' : ''}${rec ? ' • ⭐ مقترح' : ''}</small>${bar(p, mod === 'g' ? 'var(--g)' : 'var(--s)')}</span>
-       <span class="st">${starsOf(p)}</span></button>`; }).join('')}</div>
-   ${mod === 'g' ? `<button class="btn big alt" onclick="scrParse()">🔬 مختبر الإعراب: حلّل الجملة</button>` : `<button class="btn big alt" onclick="startChallenge('s')">⏱️ تحدي الإملاء السريع</button>`}`,
+       <span class="lt"><b>${c.t}</b><small>من عمر ${c.a}${rec ? ' • ⭐ مقترح' : ''}</small>${bar(p, mod === 'g' ? 'var(--g)' : 'var(--s)')}</span>
+       <span class="st">${starsOf(p)}</span></button>`; };
+  const mine = L.filter(c => c.a <= age), older = L.filter(c => c.a > age);
+  view(`${bubble(r.text)}
+   <h3>🎒 دروس تناسب عمرك (${age} سنوات) — ${mine.length} ${mine.length > 10 ? 'درسًا' : 'دروس'}</h3>
+   <div class="list">${mine.map(item).join('')}</div>
+   ${older.length ? `<details class="older"><summary>🔒 دروس للأعمار الأكبر (${older.length})</summary><div class="list">${older.map(item).join('')}</div></details>` : ''}
+   ${mod === 'g' ? `<button class="btn big alt" onclick="scrParse()">🔬 مختبر الإعراب: حلّل الجملة${age < 8 ? ' (من عمر 8)' : ''}</button>` : `<button class="btn big alt" onclick="startChallenge('s')">⏱️ تحدي الإملاء السريع</button>`}`,
    {title:MODNAME[mod], back:'scrHome()'});
 }
 
 /* ---------- الدرس ---------- */
 function scrLesson(cid){
-  const c = CON(cid), mod = cid[0];
+  const c = CON(cid), mod = cid[0], young = P().age <= 6 && c.k;
+  const full = `<div class="card"><h3>📖 الشرح</h3>${c.ex.map(x => `<p class="ln">${x} ${spk(x)}</p>`).join('')}</div>`;
+  const expl = young ? `<div class="card kidc"><h3>📖 باختصار</h3><p class="ln big">${c.k} ${spk(c.k)}</p></div><details class="older"><summary>👀 اشرح أكثر (للكبار)</summary>${full}</details>` : full;
   const body = mod === 'g'
-    ? `<div class="card"><h3>📖 الشرح</h3>${c.ex.map(x => `<p class="ln">${x} ${spk(x)}</p>`).join('')}</div>
+    ? `${expl}
        <div class="card"><h3>💡 مثال وإعرابه ${spk(c.s)}</h3><div class="sent">${c.s}</div>
        <table class="irab">${c.ir.map(r => `<tr><td class="w">${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table></div>`
-    : `<div class="card"><h3>📖 الشرح</h3>${c.ex.map(x => `<p class="ln">${x} ${spk(x)}</p>`).join('')}</div>
+    : `${expl}
        <div class="card tipc"><h3>🔑 الحيلة الذكية</h3><p>${c.tip}</p></div>
        <div class="card"><h3>💡 أمثلة</h3><div class="row wrap g10 center">${c.w.map(w => `<button class="wchip" onclick="say('${w}')">${w} 🔊</button>`).join('')}</div></div>`;
-  view(`<div class="lhead ${mod === 'g' ? 'lg' : 'ls'}"><span>${c.e}</span><h2>${c.t}</h2><small>إتقانك: ${pct(AG.p(cid))}% ${starsOf(AG.p(cid))}</small></div>
+  view(`<div class="lhead ${mod === 'g' ? 'lg' : 'ls'}"><span>${c.e}</span><h2>${c.t}</h2><small>إتقانك: ${pct(AG.p(cid))}% ${starsOf(AG.p(cid))}${c.a > P().age ? ` • هذا الدرس لعمر ${c.a}+ وسأبدأ معك بأسهل أسئلته` : ''}</small></div>
     ${body}<button class="btn big" onclick="startPractice('${mod}','${cid}')">🎯 تدرّب الآن</button>`,
     {title:'درس', back:`scrMap('${mod}')`});
 }
@@ -253,32 +294,34 @@ function scrLesson(cid){
 /* ================= جلسة التدريب ================= */
 let SES = null;
 function startPractice(mod, cid, cids){
-  SES = {mod, cid, cids, n:6, i:0, correct:0, used:new Set(), lastWrong:false, before:{}, touched:new Set(), earned:0};
+  SES = {mod, cid, cids, n:AGE.sesN(), i:0, correct:0, used:new Set(), lastWrong:false, before:{}, touched:new Set(), earned:0};
   (cid ? [cid] : cids).forEach(x => SES.before[x] = AG.p(x));
   nextQ();
 }
 function nextQ(){
   if (SES.i >= SES.n) return endPractice();
   const q = AG.pick(SES); SES.cur = q; SES.tries = 0; SES.typed = '';
-  SES.useChoice = q.type === 'dict' && !hasVoice();
+  SES.useChoice = q.type === 'dict' && !hasVoice(); // q هنا مجهّز حسب العمر
   renderQ();
 }
 function renderQ(){
   const q = SES.cur, c = CON(q.cid);
   let inner = '';
-  const optBtns = (opts, big) => `<div class="opts ${big ? 'big' : ''}">${shuffle(opts).map(o => `<button class="opt" data-v="${esc(o)}" onclick="answer(this)">${o}</button>`).join('')}</div>`;
-  if (q.type === 'mcq' || q.type === 'choose') inner = `<div class="qt">${q.q} ${spk(q.q)}</div>${optBtns(q.opts)}`;
+  const optBtns = (opts, big) => `<div class="opts ${big ? 'big' : ''}">${(q.shown || shuffle(opts)).map(o => `<button class="opt" data-v="${esc(o)}" onclick="answer(this)">${o}</button>`).join('')}</div>`;
+  if (q.type === 'mcq' || q.type === 'choose') inner = `<div class="qt">${q.q} ${spk(q.q)}</div>${q.listen ? `<button class="btn listen" onclick="say('${q.listen}')">🔊 استمع</button>` : ''}${optBtns(q.opts)}`;
   else if (q.type === 'miss') inner = `<div class="qt">${q.q}</div><div class="bigword">${q.word.replace('_', '<span class="gap">؟</span>')}</div>${optBtns(q.opts, true)}`;
   else if (q.type === 'pic') inner = `<div class="qt">${q.q}</div><div class="pic">${q.emoji}</div>${optBtns(q.opts)}`;
   else if (q.type === 'fix') inner = `<div class="qt">${q.q}</div><div class="bigword wrongw">${q.wrong}</div>${kbd()}`;
   else if (q.type === 'dict' && SES.useChoice) inner = `<div class="qt">اختر الكتابة الصحيحة للكلمة:</div><div class="note">🔇 لا يتوفر صوت عربي على هذا الجهاز، لذلك حوّلتُ الإملاء إلى اختيار.</div><button class="btn ghost" onclick="say('${q.ans}')">🔊 جرّب الاستماع</button>${optBtns(q.opts)}`;
   else if (q.type === 'dict') inner = `<div class="qt">${q.q}</div><button class="btn listen" onclick="say('${q.ans}')">🔊 استمع</button>${kbd()}`;
   view(`<div class="prog"><i style="width:${pct(SES.i / SES.n)}%"></i></div>
-    <div class="qhead"><span class="tag ${q.mod === 'g' ? 'tg' : 'ts'}">${c.e} ${c.t}</span><span class="tag">${['','سهل','متوسط','صعب'][q.d]}</span></div>
+    <div class="qhead"><span class="tag ${q.mod === 'g' ? 'tg' : 'ts'}">${c.e} ${c.t}</span><span class="tag">${DLABEL[q.d]}</span></div>
     <div class="why">🐝 ${q.why2}</div>
     <div class="card qcard">${inner}</div><div id="fb"></div>`,
     {title:`سؤال ${SES.i + 1} من ${SES.n}`, back:'scrHome()'});
   if (q.type === 'dict' && !SES.useChoice) setTimeout(() => say(q.ans), 350);
+  else if (q.listen) setTimeout(() => say(q.listen), 350);
+  else if (AGE.autoRead() && UNLOCKED) setTimeout(() => say(q.q), 350); // نقرأ السؤال للأطفال الصغار
 }
 function kbd(){
   const rows = ['ض ص ث ق ف غ ع ه خ ح ج', 'ش س ي ب ل ا ت ن م ك ط', 'ذ د ز ر و ة ى ظ', 'أ إ آ ء ؤ ئ'];
@@ -295,7 +338,7 @@ function answer(btn){ judge(btn.dataset.v === SES.cur.ans, btn); }
 
 function judge(ok, btn){
   const q = SES.cur; SES.tries++;
-  const nOpts = (q.type === 'fix' || (q.type === 'dict' && !SES.useChoice)) ? 0 : (q.opts || []).length;
+  const nOpts = (q.type === 'fix' || (q.type === 'dict' && !SES.useChoice)) ? 0 : (q.shown || q.opts || []).length;
   if (SES.tries === 1) AG.update(q.cid, ok, nOpts);
   const fb = $('#fb');
   if (ok){
@@ -388,27 +431,30 @@ function parseNext(){
 /* ---------- التحدي السريع (60 ثانية) ---------- */
 let CH = null, CHT = null;
 function scrChalPick(){
-  view(`${bubble('عندك 60 ثانية! أجب عن أكبر عدد من الأسئلة ⏱️')}
+  view(`${bubble(`عندك ${AGE.chalSec()} ثانية! أجب عن أكبر عدد من الأسئلة ⏱️`)}
    <div class="grid2"><button class="mod gram" onclick="startChallenge('g')"><span class="em">📚</span><b>تحدي النحو</b><small>أفضل نتيجة: ${P().best.g || 0}</small></button>
    <button class="mod spel" onclick="startChallenge('s')"><span class="em">✏️</span><b>تحدي الإملاء</b><small>أفضل نتيجة: ${P().best.s || 0}</small></button></div>`, {title:'التحدي السريع', back:'scrHome()'});
 }
 function startChallenge(mod){
-  const pool = shuffle(LIST(mod).flatMap(c => questionsOf(c.id)).filter(q => q.opts && q.type !== 'dict'));
-  CH = {mod, pool, i:0, score:0, end:Date.now() + 60000};
+  // أسئلة من دروس عمر الطفل وبصعوبة لا تتجاوز مستواه
+  let pool = LIST(mod).filter(AGE.fits).flatMap(c => questionsOf(c.id)).filter(q => q.opts && q.type !== 'dict' && q.d <= AGE.maxD());
+  if (pool.length < 8) pool = LIST(mod).flatMap(c => questionsOf(c.id)).filter(q => q.opts && q.type !== 'dict' && q.d <= AGE.maxD() + 1);
+  pool = shuffle(pool).map(AGE.prepare);
+  CH = {mod, pool, i:0, score:0, end:Date.now() + AGE.chalSec() * 1000};
   clearInterval(CHT); CHT = setInterval(() => { const t = $('#tm'); if (!t){ clearInterval(CHT); return; } const s = Math.max(0, Math.ceil((CH.end - Date.now()) / 1000)); t.textContent = s; if (s <= 0) endChallenge(); }, 250);
   renderChal();
 }
 function renderChal(){
   const q = CH.pool[CH.i % CH.pool.length];
-  view(`<div class="chalbar"><span>⏱️ <b id="tm">60</b></span><span>✅ <b>${CH.score}</b></span></div>
+  view(`<div class="chalbar"><span>⏱️ <b id="tm">${AGE.chalSec()}</b></span><span>✅ <b>${CH.score}</b></span></div>
    <div class="card qcard">${q.emoji ? `<div class="pic sm">${q.emoji}</div>` : ''}<div class="qt">${q.type === 'miss' ? q.q + `<div class="bigword">${q.word.replace('_', '<span class="gap">؟</span>')}</div>` : q.q}</div>
-   <div class="opts">${shuffle(q.opts).map(o => `<button class="opt" data-v="${esc(o)}" onclick="chalAns(this)">${o}</button>`).join('')}</div></div>`,
+   <div class="opts">${q.shown.map(o => `<button class="opt" data-v="${esc(o)}" onclick="chalAns(this)">${o}</button>`).join('')}</div></div>`,
    {title:'التحدي السريع', back:'clearInterval(CHT);scrHome()'});
   $('#tm').textContent = Math.max(0, Math.ceil((CH.end - Date.now()) / 1000));
 }
 function chalAns(btn){
   const q = CH.pool[CH.i % CH.pool.length], ok = btn.dataset.v === q.ans;
-  AG.update(q.cid, ok, q.opts.length);
+  AG.update(q.cid, ok, q.shown.length);
   if (ok){ CH.score++; tone(true); btn.classList.add('right'); } else { tone(false); btn.classList.add('wrong'); document.querySelectorAll('.opt').forEach(b => { if (b.dataset.v === q.ans) b.classList.add('right'); }); }
   document.querySelectorAll('.opt').forEach(b => b.disabled = true);
   setTimeout(() => { if (Date.now() >= CH.end) return endChallenge(); CH.i++; renderChal(); }, ok ? 450 : 1100);
@@ -423,18 +469,18 @@ function endChallenge(){
 
 /* ---------- الاختبار القبلي والبعدي ---------- */
 let TS = null;
-const PRE_MAP = {g:['g1','g2','g5','g6','g7','g14','g8','g11'], s:['s1','s3','s4','s5','s6','s7','s8','s9']};
 function scrTestPick(){
   const t = P().tests;
   const res = k => t[k] ? `النحو ${t[k].g}% • الإملاء ${t[k].s}%` : 'لم يُجرَ بعد';
-  view(`${bubble('الاختبار القبلي قبل التعلّم، والاختبار البعدي بعد التدريب، لنقيس كم تعلّمت. لا توجد تلميحات في الاختبار 🙂')}
+  view(`${bubble(`الاختبار القبلي قبل التعلّم، والاختبار البعدي بعد التدريب، لنقيس كم تعلّمت. أسئلة الاختبار مناسبة لعمر ${BAND_NAME[t.pre?.band || AGE.band()]}، ولا توجد تلميحات 🙂`)}
    <button class="card pf wide" onclick="startTest('pre')"><b>📝 الاختبار القبلي</b><small>${res('pre')}</small></button>
    <button class="card pf wide" ${t.pre ? '' : 'disabled'} onclick="startTest('post')"><b>🏁 الاختبار البعدي</b><small>${t.pre ? res('post') : 'متاح بعد الاختبار القبلي'}</small></button>`,
    {title:'الاختبارات', back:'scrHome()'});
 }
 function startTest(kind){
-  const T = TESTS[kind];
-  TS = {kind, items:[...T.g.map((x, i) => ({m:'g', i, q:x[0], opts:x[1]})), ...T.s.map((x, i) => ({m:'s', i, q:x[0], opts:x[1]}))], k:0, g:0, s:0, ans:[]};
+  // الاختبار البعدي من نفس فئة القبلي حتى تكون المقارنة عادلة
+  const band = (kind === 'post' && P().tests.pre && P().tests.pre.band) || AGE.band(), T = TESTS[band][kind];
+  TS = {kind, band, items:[...T.g.map(x => ({m:'g', q:x[0], opts:x[1], cid:x[2]})), ...T.s.map(x => ({m:'s', q:x[0], opts:x[1], cid:x[2]}))], k:0, g:0, s:0, ng:T.g.length, ns:T.s.length, ans:[]};
   renderTest();
 }
 function renderTest(){
@@ -443,14 +489,15 @@ function renderTest(){
    <div class="qhead"><span class="tag ${it.m === 'g' ? 'tg' : 'ts'}">${it.m === 'g' ? '📚 نحو' : '✏️ إملاء'}</span><span class="tag">${TS.k + 1} / ${TS.items.length}</span></div>
    <div class="card qcard"><div class="qt">${it.q} ${spk(it.q)}</div><div class="opts">${shuffle(it.opts).map(o => `<button class="opt" data-v="${esc(o)}" onclick="testAns(this)">${o}</button>`).join('')}</div></div>`,
    {title:TS.kind === 'pre' ? 'الاختبار القبلي' : 'الاختبار البعدي', back:'scrHome()'});
+  if (AGE.autoRead() && UNLOCKED) setTimeout(() => say(it.q), 350);
 }
 function testAns(btn){
   const it = TS.items[TS.k], ok = btn.dataset.v === it.opts[0];
-  if (ok) TS[it.m]++; TS.ans.push({m:it.m, i:it.i, ok});
+  if (ok) TS[it.m]++; TS.ans.push({cid:it.cid, n:it.opts.length, ok});
   TS.k++; if (TS.k < TS.items.length) return renderTest();
-  const pr = P(), g = Math.round(TS.g / 8 * 100), s = Math.round(TS.s / 8 * 100);
-  pr.tests[TS.kind] = {g, s, t:Date.now()};
-  if (TS.kind === 'pre') TS.ans.forEach(a => AG.update(PRE_MAP[a.m][a.i], a.ok, TESTS.pre[a.m][a.i][1].length)); // الوكيل يستخدم الاختبار القبلي لتحديد المستوى
+  const pr = P(), g = Math.round(TS.g / TS.ng * 100), s = Math.round(TS.s / TS.ns * 100);
+  pr.tests[TS.kind] = {g, s, band:TS.band, t:Date.now()};
+  if (TS.kind === 'pre') TS.ans.forEach(a => AG.update(a.cid, a.ok, a.n)); // الوكيل يستخدم الاختبار القبلي لتحديد المستوى
   pr.stars += 5; save(); confetti();
   const pre = pr.tests.pre, post = pr.tests.post;
   view(`<div class="hero">${bee(90)}<h2>انتهى الاختبار! +5 ⭐</h2></div>
@@ -505,13 +552,16 @@ function scrTeacher(){
   const A = {gp:avg(paired, p => p.tests.pre.g), ga:avg(paired, p => p.tests.post.g), sp:avg(paired, p => p.tests.pre.s), sa:avg(paired, p => p.tests.post.s)};
   const f = v => v == null ? '—' : Math.round(v) + '%';
   const d = (a, b) => a == null || b == null ? '—' : `${b - a >= 0 ? '+' : ''}${Math.round(b - a)}`;
-  const csv = ['code,age,pre_grammar,post_grammar,pre_spelling,post_spelling,grammar_mastery,spelling_mastery,stars',
-    ...ps.map(p => [p.name.replace(/,/g, ' '), p.age, p.tests.pre?.g ?? '', p.tests.post?.g ?? '', p.tests.pre?.s ?? '', p.tests.post?.s ?? '', pctOf(p, 'g'), pctOf(p, 's'), p.stars].join(','))].join('\n');
+  const bandOf = p => (p.tests.pre && p.tests.pre.band) || (p.age <= 6 ? 'A' : p.age <= 8 ? 'B' : p.age <= 10 ? 'C' : 'D');
+  const byBand = Object.keys(BAND_NAME).map(b => { const ps2 = paired.filter(p => bandOf(p) === b); return ps2.length ? `<tr><td>${BAND_NAME[b]}</td><td>${ps2.length}</td><td>${f(avg(ps2, p => p.tests.pre.g))} ← ${f(avg(ps2, p => p.tests.post.g))}</td><td>${f(avg(ps2, p => p.tests.pre.s))} ← ${f(avg(ps2, p => p.tests.post.s))}</td></tr>` : ''; }).join('');
+  const csv = ['code,age,test_group,pre_grammar,post_grammar,pre_spelling,post_spelling,grammar_mastery,spelling_mastery,stars',
+    ...ps.map(p => [p.name.replace(/,/g, ' '), p.age, BAND_NAME[bandOf(p)], p.tests.pre?.g ?? '', p.tests.post?.g ?? '', p.tests.pre?.s ?? '', p.tests.post?.s ?? '', pctOf(p, 'g'), pctOf(p, 's'), p.stars].join(','))].join('\n');
   view(`<div class="card"><h3>👥 ملخص النتائج</h3>
      <p>عدد الأطفال: <b>${ps.length}</b> • أكملوا الاختبارين: <b>${paired.length}</b></p>
      <table class="tbl"><tr><th></th><th>قبل</th><th>بعد</th><th>التحسّن (نقاط)</th></tr>
      <tr><td>📚 النحو</td><td>${f(A.gp)}</td><td>${f(A.ga)}</td><td><b>${d(A.gp, A.ga)}</b></td></tr>
      <tr><td>✏️ الإملاء</td><td>${f(A.sp)}</td><td>${f(A.sa)}</td><td><b>${d(A.sp, A.sa)}</b></td></tr></table>
+     ${byBand ? `<h3>حسب الفئة العمرية (لكل فئة اختبار يناسبها)</h3><table class="tbl sm"><tr><th>الفئة</th><th>العدد</th><th>النحو قبل ← بعد</th><th>الإملاء قبل ← بعد</th></tr>${byBand}</table>` : ''}
      ${paired.length ? testChart([{l:'النحو', a:A.gp, b:A.ga}, {l:'الإملاء', a:A.sp, b:A.sa}], `متوسط الدرجات (ن = ${paired.length})`) : '<p class="small">يظهر الرسم البياني بعد أن يُكمل طفل واحد على الأقل الاختبارين.</p>'}</div>
    <div class="card"><h3>📋 كل طفل (رموز فقط)</h3><div class="scroll"><table class="tbl sm"><tr><th>الرمز</th><th>العمر</th><th>نحو قبل</th><th>نحو بعد</th><th>إملاء قبل</th><th>إملاء بعد</th><th></th></tr>
      ${ps.map(p => `<tr><td>${esc(p.name)}</td><td>${p.age}</td><td>${f(p.tests.pre?.g)}</td><td>${f(p.tests.post?.g)}</td><td>${f(p.tests.pre?.s)}</td><td>${f(p.tests.post?.s)}</td><td><button class="mini" onclick="delP('${p.id}')">🗑</button></td></tr>`).join('')}</table></div></div>
@@ -532,9 +582,10 @@ function scrGuide(){
   view(`<div class="card guide">
    <h3>📱 التثبيت</h3><p><b>أندرويد:</b> نزّل ملف التطبيق (APK) وافتحه، واسمح بالتثبيت من هذا المصدر عند الطلب.<br><b>آيفون/آيباد:</b> افتح رابط التطبيق في Safari ← زر «مشاركة» ← «إضافة إلى الشاشة الرئيسية». يظهر التطبيق بأيقونة النحلة ويعمل بدون إنترنت.</p>
    <h3>👤 إنشاء متعلّم</h3><p>اكتب اسمًا مستعارًا أو رمزًا (مثل: نجمة ٣) واختر العمر. لا تكتب الاسم الكامل. يمكن إضافة أكثر من طفل على نفس الجهاز.</p>
-   <h3>📝 الاختبار القبلي</h3><p>8 أسئلة نحو + 8 إملاء بلا تلميحات. يستخدمه الوكيل لتحديد المستوى.</p>
+   <h3>📝 الاختبار القبلي</h3><p>أسئلة نحو وإملاء بلا تلميحات، تناسب عمر الطفل (6 + 6 لعمر 5–6، و8 + 8 للأكبر). يستخدمه الوكيل لتحديد المستوى.</p>
    <h3>📚 النحو والإعراب (${GRAMMAR.length} درسًا)</h3><p>اختر درسًا ← اقرأ الشرح واستمع إليه 🔊 ← شاهد المثال وإعرابه ← «تدرّب الآن» (6 أسئلة). «مختبر الإعراب» لتحليل الجمل كلمة كلمة.</p>
    <h3>✏️ الإملاء (${SPELLING.length} دروس)</h3><p>لكل درس شرح وحيلة ذكية وأمثلة مسموعة، وأنشطة: أكمل الحرف الناقص، اختر الكتابة الصحيحة، طابق الصورة، صحّح الكلمة، استمع واكتب.</p>
+   <h3>🎂 التكييف حسب العمر</h3><p>• لكل عمر دروس تناسبه، والدروس الأصعب تظهر تحت «دروس للأعمار الأكبر».<br>• صعوبة الأسئلة خمسة مستويات؛ عمر 5 يبدأ بالأسهل، وكل سنة أصعب قليلًا، حتى عمر 12.<br>• عمر 5–6: خياران فقط، أسئلة بالصور، شرح مختصر، قراءة السؤال بالصوت، ولا كتابة.<br>• عمر 7–8: ثلاثة خيارات، وتبدأ أنشطة الكتابة.<br>• عمر 9 فما فوق: كل الخيارات وأسئلة أصعب.<br>• الاختبار القبلي والبعدي له أربع نسخ: 5–6، 7–8، 9–10، 11–12.</p>
    <h3>🐝 الوكيل الذكي «نحّولة»</h3><p>• يقدّر إتقان الطفل لكل درس بعد كل إجابة (نموذج تتبّع المعرفة).<br>• يختار السؤال التالي: أسهل بعد الخطأ، وأصعب بعد النجاح، ويشرح سبب اختياره.<br>• عند الخطأ: تلميح أولًا ثم الإجابة الصحيحة مع الشرح، ويقترح مراجعة الدرس إذا تكرر الخطأ.<br>• يقترح الدرس التالي حسب العمر ونقاط الضعف ونتيجة الاختبار القبلي.<br>• «المراجعة الذكية» تجمع أسئلة من أضعف الدروس.</p>
    <h3>⚠️ حدود الوكيل</h3><p>• يعتمد على قواعد ونموذج إحصائي بسيط، ولا يكتب شرحًا جديدًا بالذكاء التوليدي؛ كل الشروح مكتوبة مسبقًا ومراجعة لتجنّب الأخطاء.<br>• لا يفهم الكلام الحر ولا يقيّم الخط اليدوي.<br>• تقدير الإتقان تقريبي ويحتاج إلى عدة إجابات ليصبح دقيقًا.<br>• الإملاء الصوتي يحتاج صوتًا عربيًا في الجهاز؛ وإن لم يتوفر يتحول إلى اختيار.</p>
    <h3>📈 التقدّم والاختبار البعدي</h3><p>«تقدّمي» يعرض إتقان النحو والإملاء كلٌّ على حدة. بعد التدريب أجرِ «الاختبار البعدي» للمقارنة.</p>
