@@ -715,13 +715,17 @@ function arVoice(){ try { return speechSynthesis.getVoices().find(v => /^ar/i.te
 function hasVoice(){ try { if (window.AndroidTTS) return !!AndroidTTS.hasArabic(); } catch(e){} return !!arVoice(); }
 function say(text){
   try {
-    if (window.AndroidTTS){ AndroidTTS.speak(String(text).replace(/_+/g, ' ... ').replace(/[«»]/g, '')); return true; }
-    if (!('speechSynthesis' in window)) return false;
-    // في آيفون/آيباد: استدعاء cancel ثم speak مباشرة يُسكت الصوت، لذلك نلغي فقط إذا كان هناك كلام جارٍ
-    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(String(text).replace(/_+/g, ' ... ').replace(/[«»]/g, ''));
-    u.lang = 'ar-SA'; const v = arVoice(); if (v) u.voice = v; u.rate = 0.85;
-    speechSynthesis.speak(u); return true;
+    const t = String(text).replace(/_+/g, ' ... ').replace(/[«»]/g, '');
+    if (window.AndroidTTS){ AndroidTTS.speak(t); return true; }
+    if (!('speechSynthesis' in window)) { toast('🔇 هذا الجهاز لا يدعم القراءة بالصوت'); return false; }
+    const u = new SpeechSynthesisUtterance(t);
+    u.lang = 'ar-SA'; const v = arVoice(); if (v) u.voice = v; u.rate = 0.85; u.volume = 1;
+    window._u = u; // يمنع Safari من حذف الجملة قبل نطقها
+    const go = () => { try { speechSynthesis.resume(); } catch(e){} speechSynthesis.speak(u); };
+    // في آيفون/آيباد: الإلغاء ثم النطق فورًا يُسكت الصوت، فننتظر قليلًا إذا كان هناك كلام جارٍ
+    if (speechSynthesis.speaking || speechSynthesis.pending){ speechSynthesis.cancel(); setTimeout(go, 120); } else go();
+    if (!v && !S.warnedVoice){ S.warnedVoice = 1; setTimeout(() => toast('إذا لم تسمع صوتًا: نزّل صوتًا عربيًا من الإعدادات (انظر «فحص الصوت» في الدليل)'), 1500); }
+    return true;
   } catch(e){ return false; }
 }
 try { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices(); } catch(e){}
@@ -732,7 +736,6 @@ let UNLOCKED = false;
 function unlockAudio(){
   if (UNLOCKED) return; UNLOCKED = true;
   try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); AC.resume(); const b = AC.createBuffer(1, 1, 22050), src = AC.createBufferSource(); src.buffer = b; src.connect(AC.destination); src.start(0); } catch(e){}
-  try { if (!window.AndroidTTS && 'speechSynthesis' in window){ const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.lang = 'ar-SA'; speechSynthesis.speak(u); } } catch(e){}
 }
 document.addEventListener('touchend', unlockAudio, {passive:true});
 document.addEventListener('click', unlockAudio);
@@ -896,7 +899,7 @@ function scrProfiles(){
     <label>العمر</label>
     <div class="ages">${[5,6,7,8,9,10,11,12].map(a => `<button class="age" data-a="${a}" onclick="document.querySelectorAll('.age').forEach(b=>b.classList.remove('on'));this.classList.add('on')">${a}</button>`).join('')}</div>
     <button class="btn big" onclick="newProfile()">ابدأ 🚀</button></div>
-   <div class="row center g10 foot"><button class="lnk" onclick="scrGuide()">📘 دليل الاستخدام</button><button class="lnk" onclick="scrTeacherGate()">👩‍🏫 للمعلم / ولي الأمر</button></div>`, {bare:true});
+   <div class="row center g10 foot"><button class="lnk" onclick="scrGuide()">📘 دليل الاستخدام</button><button class="lnk" onclick="scrSound()">🔊 فحص الصوت</button><button class="lnk" onclick="scrTeacherGate()">👩‍🏫 للمعلم / ولي الأمر</button></div>`, {bare:true});
 }
 function newProfile(){
   const name = ($('#pn').value || '').trim(); const ag = document.querySelector('.age.on');
@@ -930,7 +933,7 @@ function scrHome(){
     <button class="tile" onclick="scrReviewPick()">🧠<b>مراجعة ذكية</b></button>
     <button class="tile" onclick="scrProgress()">📈<b>تقدّمي</b></button>
     <button class="tile" onclick="scrTestPick()">📝<b>الاختبارات</b></button>
-    <button class="tile" onclick="scrGuide()">📘<b>الدليل</b></button>
+    <button class="tile" onclick="scrSound()">🔊<b>فحص الصوت</b></button>
    </div>`, {title:`مرحبًا ${esc(pr.name)}`});
 }
 
@@ -1253,6 +1256,24 @@ let DEL = null;
 function delP(id){
   if (DEL !== id){ DEL = id; return toast('اضغط 🗑 مرة ثانية للتأكيد'); }
   delete S.profiles[id]; if (S.cur === id) S.cur = null; DEL = null; save(); scrTeacher();
+}
+
+/* ---------- فحص الصوت ---------- */
+function scrSound(){
+  let vs = []; try { vs = speechSynthesis.getVoices(); } catch(e){}
+  const ar = vs.filter(v => /^ar/i.test(v.lang));
+  const ok = window.AndroidTTS ? AndroidTTS.hasArabic() : ar.length > 0;
+  view(`<div class="card"><h3>🔊 فحص الصوت</h3>
+    <p>القراءة بالصوت: ${'speechSynthesis' in window || window.AndroidTTS ? '✅ مدعومة' : '❌ غير مدعومة'}</p>
+    <p>صوت عربي في الجهاز: ${ok ? '✅ موجود' + (ar[0] ? ` (${esc(ar[0].name)})` : '') : '❌ غير موجود'}</p>
+    <button class="btn big" onclick="say('مرحبًا! أنا نحّولة')">🗣️ جرّب القراءة</button>
+    <button class="btn big ghost" onclick="S.sound=true;tone(true)">🎵 جرّب نغمة الإجابة الصحيحة</button></div>
+   <div class="card"><h3>إذا لم تسمع شيئًا (آيفون / آيباد)</h3>
+    <p>1) ارفع الصوت بأزرار الجهاز، وأوقف الوضع الصامت 🔕.<br>
+    2) الإعدادات ← تسهيلات الاستخدام ← المحتوى المنطوق ← الأصوات ← العربية ← نزّل صوتًا (مثل Majed).<br>
+    3) أغلق التطبيق تمامًا وافتحه من جديد، ثم ارجع لهذه الصفحة.<br>
+    4) إذا لم يعمل من أيقونة الشاشة الرئيسية، جرّبه من Safari مباشرة.</p></div>`,
+   {title:'فحص الصوت', back:S.cur ? 'scrHome()' : 'scrProfiles()'});
 }
 
 /* ---------- دليل الاستخدام ---------- */
