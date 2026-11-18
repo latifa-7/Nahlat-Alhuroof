@@ -711,7 +711,10 @@ function tone(ok){
     });
   } catch(e){}
 }
-function arVoice(){ try { return speechSynthesis.getVoices().find(v => /^ar/i.test(v.lang)); } catch(e){ return null; } }
+/* نختار أوضح صوت عربي متوفر: الصوت الذي اختاره المستخدم، ثم الأصوات المحسّنة، ثم أصوات Google/Microsoft */
+function arVoices(){ try { return speechSynthesis.getVoices().filter(v => /^ar/i.test(v.lang)); } catch(e){ return []; } }
+function voiceScore(v){ const n = v.name.toLowerCase(); return (/premium|enhanced|محسّن|محسن|neural|natural/.test(n) ? 100 : 0) + (/google/.test(n) ? 40 : 0) + (/majed|maged|hamed|naayf|zariyah|laila|tarik|mariam/.test(n) ? 20 : 0) + (/sa/i.test(v.lang) ? 5 : 0) + (v.localService ? 1 : 0); }
+function arVoice(){ const vs = arVoices(); if (!vs.length) return null; const pick = S.voice && vs.find(v => v.name === S.voice); return pick || vs.slice().sort((a, b) => voiceScore(b) - voiceScore(a))[0]; }
 function hasVoice(){ try { if (window.AndroidTTS) return !!AndroidTTS.hasArabic(); } catch(e){} return !!arVoice(); }
 function say(text){
   try {
@@ -719,7 +722,9 @@ function say(text){
     if (window.AndroidTTS){ AndroidTTS.speak(t); return true; }
     if (!('speechSynthesis' in window)) { toast('🔇 هذا الجهاز لا يدعم القراءة بالصوت'); return false; }
     const u = new SpeechSynthesisUtterance(t);
-    u.lang = 'ar-SA'; const v = arVoice(); if (v) u.voice = v; u.rate = 0.85; u.volume = 1;
+    const v = arVoice(); u.lang = v ? v.lang : 'ar-SA'; if (v) u.voice = v; u.volume = 1;
+    // أبطأ قليلًا حتى تُسمع المدود بوضوح، والكلمات المفردة (الإملاء) أبطأ أكثر
+    const base = S.rate || 0.75; u.rate = t.trim().split(/\s+/).length <= 2 ? base * 0.85 : base;
     window._u = u; // يمنع Safari من حذف الجملة قبل نطقها
     const go = () => { try { speechSynthesis.resume(); } catch(e){} speechSynthesis.speak(u); };
     // في آيفون/آيباد: الإلغاء ثم النطق فورًا يُسكت الصوت، فننتظر قليلًا إذا كان هناك كلام جارٍ
@@ -1266,11 +1271,15 @@ function scrSound(){
   view(`<div class="card"><h3>🔊 فحص الصوت</h3>
     <p>القراءة بالصوت: ${'speechSynthesis' in window || window.AndroidTTS ? '✅ مدعومة' : '❌ غير مدعومة'}</p>
     <p>صوت عربي في الجهاز: ${ok ? '✅ موجود' + (ar[0] ? ` (${esc(ar[0].name)})` : '') : '❌ غير موجود'}</p>
-    <button class="btn big" onclick="say('مرحبًا! أنا نحّولة')">🗣️ جرّب القراءة</button>
-    <button class="btn big ghost" onclick="S.sound=true;tone(true)">🎵 جرّب نغمة الإجابة الصحيحة</button></div>
+    <button class="btn big" onclick="say('مرحبًا! أنا نحّولة. بابٌ، نورٌ، فيلٌ، صاروخٌ')">🗣️ جرّب القراءة</button></div>
+   ${ar.length ? `<div class="card"><h3>🎙️ اختر الصوت</h3><p class="small">اضغط على صوت لتسمعه ويُحفظ اختيارك.</p>
+    <div class="opts">${ar.slice().sort((a, b) => voiceScore(b) - voiceScore(a)).map(v => `<button class="opt ${arVoice() && arVoice().name === v.name ? 'right' : ''}" data-n="${esc(v.name)}" onclick="S.voice=this.dataset.n;save();say('بابٌ، نورٌ، فيلٌ');scrSound()">${esc(v.name)}${voiceScore(v) >= 100 ? ' ⭐' : ''}</button>`).join('')}</div></div>` : ''}
+   <div class="card"><h3>🐢 سرعة القراءة</h3><div class="row g6">${[[0.6, 'بطيئة'], [0.75, 'متوسطة'], [0.9, 'عادية']].map(([r, l]) => `<button class="btn ${ (S.rate || 0.75) === r ? '' : 'ghost'}" style="flex:1" onclick="S.rate=${r};save();say('صاروخٌ، عصفورٌ، سفينةٌ');scrSound()">${l}</button>`).join('')}</div>
+    <button class="btn big ghost mt8" onclick="S.sound=true;tone(true)">🎵 جرّب نغمة الإجابة الصحيحة</button></div><div>
+</div>
    <div class="card"><h3>إذا لم تسمع شيئًا (آيفون / آيباد)</h3>
     <p>1) ارفع الصوت بأزرار الجهاز، وأوقف الوضع الصامت 🔕.<br>
-    2) الإعدادات ← تسهيلات الاستخدام ← المحتوى المنطوق ← الأصوات ← العربية ← نزّل صوتًا (مثل Majed).<br>
+    2) الإعدادات ← تسهيلات الاستخدام ← المحتوى المنطوق ← الأصوات ← العربية ← نزّل صوتًا (مثل Majed). اختر النسخة «المحسّنة» (Enhanced) لأنها أوضح بكثير.<br>
     3) أغلق التطبيق تمامًا وافتحه من جديد، ثم ارجع لهذه الصفحة.<br>
     4) إذا لم يعمل من أيقونة الشاشة الرئيسية، جرّبه من Safari مباشرة.</p></div>`,
    {title:'فحص الصوت', back:S.cur ? 'scrHome()' : 'scrProfiles()'});
